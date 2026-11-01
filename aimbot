@@ -1,0 +1,412 @@
+-- โหลด Rayfield UI Library
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+-- สร้างหน้าต่างหลัก (EXZ HUB)
+local Window = Rayfield:CreateWindow({
+   Name = "EXZ HUB - Shooter Edition",
+   LoadingTitle = "กำลังโหลดระบบ EXZ HUB...",
+   LoadingSubtitle = "โดย ผู้ใช้งาน",
+   ConfigurationSaving = {
+      Enabled = true,
+      FolderName = "EXZHubConfig",
+      FileName = "ShooterConfig"
+   },
+   Discord = {
+      Enabled = false,
+      Invite = "noinvite",
+      RememberJoins = true
+   },
+   KeySystem = false,
+   ToggleKey = Enum.KeyCode.RightControl,
+})
+
+-- สร้าง Tabs
+local CombatTab = Window:CreateTab("🎯 ระบบต่อสู้", 4483362458)
+local VisualsTab = Window:CreateTab("👁️ การมองเห็น (ESP)", 4483362458)
+local PlayerTab = Window:CreateTab("⚡ ฟังก์ชันผู้เล่น", 4483362458)
+
+-- ตัวแปรระบบทั่วไป
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local RunService = game:GetService("RunService")
+local Camera = workspace.CurrentCamera
+
+local flying = false
+local flySpeed = 50
+local speedVal = 16
+local bodyGyro, bodyVelocity
+
+local noclipEnabled = false
+local noclipConnection
+
+-- ตัวแปรระบบ Aimbot & FOV สีรุ้ง
+local aimbotEnabled = false
+local fovToggle = true
+local fovSize = 100
+local lockedTarget = nil
+
+-- สร้างวงกลม FOV
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Visible = false
+FOVCircle.Filled = false
+FOVCircle.Thickness = 3
+FOVCircle.Transparency = 1
+
+-- ตัวแปรระบบ ESP (Highlight และ Tracers)
+local espEnabled = false
+local tracersEnabled = false
+
+--------------------------------------------------
+--- 1. ระบบบิน (Fly) ---
+--------------------------------------------------
+local function startFly()
+    local character = LocalPlayer.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return end
+    local hrp = character.HumanoidRootPart
+    
+    bodyGyro = Instance.new("BodyGyro")
+    bodyGyro.P = 9e4
+    bodyGyro.maxTorque = Vector3.new(9e4, 9e4, 9e4)
+    bodyGyro.cframe = hrp.CFrame
+    bodyGyro.Parent = hrp
+
+    bodyVelocity = Instance.new("BodyVelocity")
+    bodyVelocity.velocity = Vector3.new(0, 0, 0)
+    bodyVelocity.maxForce = Vector3.new(9e4, 9e4, 9e4)
+    bodyVelocity.Parent = hrp
+
+    flying = true
+    
+    task.spawn(function()
+        while flying and character and character:FindFirstChild("Humanoid") do
+            RunService.RenderStepped:Wait()
+            local moveDir = character.Humanoid.MoveDirection
+            if moveDir.Magnitude > 0 then
+                bodyVelocity.velocity = Camera.CFrame.LookVector * flySpeed * 2
+            else
+                bodyVelocity.velocity = Vector3.new(0, 0, 0)
+            end
+            bodyGyro.cframe = Camera.CFrame
+        end
+    end)
+end
+
+local function stopFly()
+    flying = false
+    if bodyGyro then bodyGyro:Destroy() end
+    if bodyVelocity then bodyVelocity:Destroy() end
+end
+
+--------------------------------------------------
+--- 2. ระบบเดินทะลุกำแพง (Noclip) ---
+--------------------------------------------------
+local function toggleNoclip(state)
+    noclipEnabled = state
+    if noclipEnabled then
+        noclipConnection = RunService.Stepped:Connect(function()
+            local character = LocalPlayer.Character
+            if character then
+                for _, part in ipairs(character:GetDescendants()) do
+                    if part:IsA("BasePart") and part.CanCollide then
+                        part.CanCollide = false
+                    end
+                end
+            end
+        end)
+    else
+        if noclipConnection then
+            noclipConnection:Disconnect()
+            noclipConnection = nil
+        end
+    end
+end
+
+--------------------------------------------------
+--- 3. ระบบ Aimbot (ล็อกหัว) & FOV สีรุ้ง ---
+--------------------------------------------------
+local function getClosestPlayerToCursor()
+    if lockedTarget and lockedTarget.Parent and lockedTarget.Parent:FindFirstChild("Humanoid") then
+        if lockedTarget.Parent.Humanoid.Health > 0 then
+            local screenPoint, onScreen = Camera:WorldToScreenPoint(lockedTarget.Position)
+            if onScreen then
+                local mousePos = game:GetService("UserInputService"):GetMouseLocation()
+                local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - mousePos).Magnitude
+                if dist < (fovSize * 2.5) then
+                    return lockedTarget
+                end
+            end
+        end
+    end
+
+    local target = nil
+    local shortestDist = fovSize
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local isSameTeam = false
+            if LocalPlayer.Team and player.Team and LocalPlayer.Team == player.Team then
+                isSameTeam = true
+            end
+
+            if not isSameTeam and player.Character and player.Character:FindFirstChild("Head") and player.Character:FindFirstChild("Humanoid") then
+                if player.Character.Humanoid.Health > 0 then
+                    local head = player.Character.Head
+                    local screenPoint, onScreen = Camera:WorldToScreenPoint(head.Position)
+                    
+                    if onScreen then
+                        local mousePos = game:GetService("UserInputService"):GetMouseLocation()
+                        local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - mousePos).Magnitude
+                        
+                        if dist < shortestDist then
+                            shortestDist = dist
+                            target = head
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    lockedTarget = target
+    return target
+end
+
+RunService.RenderStepped:Connect(function()
+    -- อัปเดตวงกลม FOV สีรุ้ง
+    local viewportSize = Camera.ViewportSize
+    FOVCircle.Position = Vector2.new(viewportSize.X / 2, viewportSize.Y / 2)
+    FOVCircle.Radius = fovSize
+    FOVCircle.Visible = aimbotEnabled and fovToggle
+
+    local hue = tick() % 5 / 5
+    FOVCircle.Color = Color3.fromHSV(hue, 1, 1)
+
+    -- ระบบล็อกหัว (Aimbot) ทำงานทันทีเมื่อเปิดสวิตช์
+    if aimbotEnabled then
+        local targetHead = getClosestPlayerToCursor()
+        if targetHead then
+            local targetCFrame = CFrame.new(Camera.CFrame.Position, targetHead.Position)
+            Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, 0.3)
+        else
+            lockedTarget = nil
+        end
+    else
+        lockedTarget = nil
+    end
+end)
+
+--------------------------------------------------
+--- 4. ระบบ ESP (Highlight & Tracers เส้นผู้เล่น) ---
+--------------------------------------------------
+local tracersPool = {}
+
+local function getLine()
+    local line = Drawing.new("Line")
+    line.Thickness = 1.5
+    line.Transparency = 1
+    line.Visible = false
+    return line
+end
+
+local function setupHighlight(player)
+    if player == LocalPlayer then return end
+
+    local function applyHighlight(char)
+        if not char then return end
+        if char:FindFirstChild("EXZ_Highlight") then return end
+
+        local highlight = Instance.new("Highlight")
+        highlight.Name = "EXZ_Highlight"
+        highlight.Adornee = char
+        highlight.Parent = char
+        highlight.Enabled = espEnabled
+        highlight.FillTransparency = 0.5
+        highlight.OutlineTransparency = 0
+    end
+
+    player.CharacterAdded:Connect(applyHighlight)
+    if player.Character then
+        task.spawn(function() applyHighlight(player.Character) end)
+    end
+end
+
+for _, p in ipairs(Players:GetPlayers()) do setupHighlight(p) end
+Players.PlayerAdded:Connect(setupHighlight)
+
+RunService.RenderStepped:Connect(function()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            if not tracersPool[p] then
+                tracersPool[p] = getLine()
+            end
+            
+            local line = tracersPool[p]
+            local char = p.Character
+            local hasTeamSystem = (LocalPlayer.Team ~= nil and p.Team ~= nil)
+            local isSameTeam = hasTeamSystem and (LocalPlayer.Team == p.Team)
+
+            if tracersEnabled and char and char:FindFirstChild("HumanoidRootPart") and char:FindFirstChild("Humanoid") and char.Humanoid.Health > 0 then
+                local hrp = char.HumanoidRootPart
+                local vector, onScreen = Camera:WorldToScreenPoint(hrp.Position)
+                
+                if onScreen then
+                    line.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
+                    line.To = Vector2.new(vector.X, vector.Y)
+                    
+                    if hasTeamSystem and not isSameTeam then
+                        line.Color = Color3.fromRGB(255, 0, 0) -- แดง (ศัตรู)
+                    else
+                        line.Color = Color3.fromRGB(0, 255, 0) -- เขียว (ทีมเดียวกัน)
+                    end
+                    
+                    line.Visible = true
+                else
+                    line.Visible = false
+                end
+            else
+                line.Visible = false
+            end
+        end
+    end
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local char = player.Character
+            local highlight = char:FindFirstChild("EXZ_Highlight")
+            
+            if highlight then
+                highlight.Enabled = espEnabled
+                
+                if espEnabled then
+                    local hasTeamSystem = (LocalPlayer.Team ~= nil and player.Team ~= nil)
+                    local isSameTeam = hasTeamSystem and (LocalPlayer.Team == player.Team)
+
+                    if hasTeamSystem and not isSameTeam then
+                        highlight.FillColor = Color3.fromRGB(255, 0, 0)     
+                        highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+                    else
+                        highlight.FillColor = Color3.fromRGB(0, 255, 0)     
+                        highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+                    end
+                end
+            end
+        end
+    end
+end)
+
+--------------------------------------------------
+--- สร้าง UI หน้าต่างเมนู ---
+--------------------------------------------------
+
+CombatTab:CreateToggle({
+   Name = "เปิด/ปิด Aimbot (ล็อกหัว)",
+   CurrentValue = false,
+   Flag = "AimbotToggle",
+   Callback = function(Value)
+      aimbotEnabled = Value
+      lockedTarget = nil
+   end,
+})
+
+CombatTab:CreateToggle({
+   Name = "แสดงวงกลม Aimbot (FOV)",
+   CurrentValue = true,
+   Flag = "FOVCircleToggle",
+   Callback = function(Value)
+      fovToggle = Value
+   end,
+})
+
+CombatTab:CreateSlider({
+   Name = "ปรับขนาดวงกลม Aimbot",
+   Range = {20, 400},
+   Increment = 5,
+   Suffix = "ขนาด",
+   CurrentValue = 100,
+   Flag = "FOVSizeSlider",
+   Callback = function(Value)
+      fovSize = Value
+   end,
+})
+
+VisualsTab:CreateToggle({
+   Name = "เปิด/ปิด ESP (Highlight ติดตัว)",
+   CurrentValue = false,
+   Flag = "ESPToggle",
+   Callback = function(Value)
+      espEnabled = Value
+   end,
+})
+
+VisualsTab:CreateToggle({
+   Name = "เปิด/ปิด เส้น ESP ผู้เล่น (Tracers)",
+   CurrentValue = false,
+   Flag = "TracersToggle",
+   Callback = function(Value)
+      tracersEnabled = Value
+   end,
+})
+
+PlayerTab:CreateToggle({
+   Name = "เปิด/ปิด การบิน",
+   CurrentValue = false,
+   Flag = "FlyToggle",
+   Callback = function(Value)
+      if Value then startFly() else stopFly() end
+   end,
+})
+
+PlayerTab:CreateSlider({
+   Name = "ความเร็วในการบิน",
+   Range = {10, 200},
+   Increment = 5,
+   Suffix = "ความเร็ว",
+   CurrentValue = 50,
+   Flag = "FlySpeedSlider",
+   Callback = function(Value)
+      flySpeed = Value
+   end,
+})
+
+PlayerTab:CreateToggle({
+   Name = "เดินทะลุกำแพง (Noclip)",
+   CurrentValue = false,
+   Flag = "NoclipToggle",
+   Callback = function(Value)
+      toggleNoclip(Value)
+   end,
+})
+
+PlayerTab:CreateToggle({
+   Name = "วิ่งเร็วพิเศษ",
+   CurrentValue = false,
+   Flag = "SpeedToggle",
+   Callback = function(Value)
+      local humanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
+      if humanoid then
+          humanoid.WalkSpeed = Value and speedVal or 16
+      end
+   end,
+})
+
+PlayerTab:CreateSlider({
+   Name = "ความเร็วในการวิ่ง",
+   Range = {16, 200},
+   Increment = 5,
+   Suffix = "WalkSpeed",
+   CurrentValue = 16,
+   Flag = "WalkSpeedSlider",
+   Callback = function(Value)
+      speedVal = Value
+      local humanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
+      if humanoid and Rayfield.Flags["SpeedToggle"].CurrentValue then
+          humanoid.WalkSpeed = speedVal
+      end
+   end,
+})
+
+Rayfield:Notify({
+   Title = "EXZ HUB Loaded",
+   Content = "โหลดสคริปต์ EXZ HUB สำเร็จแล้ว!",
+   Duration = 4,
+})
